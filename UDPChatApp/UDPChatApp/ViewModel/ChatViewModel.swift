@@ -9,30 +9,19 @@ import Foundation
 import Combine
 @preconcurrency import Network
 
-final class ChatViewModel: ObservableObject, @unchecked Sendable, ChatAppProtocol {
-    private var listener: NWListener?
-    private var message: [Message] = []
-    private var status: String = ""
-    private var isListening: Bool = false
-    private var incomingConnection: [ObjectIdentifier: NWConnection] = [:]
-    private var outgoingConnection: [ObjectIdentifier: NWConnection] = [:]
-    private var queue = DispatchQueue ( label: "com.Kushal.UDPChatApp.network" )
+final class ChatViewModel: ObservableObject, @unchecked Sendable {
+    @Published private(set) var messages: [Message] = []
+    @Published private(set) var status: String = "Listener Stopped"
+    @Published private(set) var isListening: Bool = false
+    
+    private(set) var listener: NWListener?
+    private(set) var incomingConnection: [ObjectIdentifier: NWConnection] = [:]
+    private(set) var outgoingConnection: [ObjectIdentifier: NWConnection] = [:]
+    private(set) var queue = DispatchQueue ( label: "com.example.UDPChatApp.network" )
     
     init() {}
     
-    deinit {
-        listener?.cancel()
-    }
-    
-    func status(_ status: String,
-                isListening: Bool? = nil) {
-        DispatchQueue.main.async { [weak self] in
-            self?.status = status
-            if let isListening {
-                self?.isListening = isListening
-            }
-        }
-    }
+    deinit { listener?.cancel() }
     
     func startListening(port: UInt16) {
         guard listener == nil else {
@@ -81,7 +70,7 @@ final class ChatViewModel: ObservableObject, @unchecked Sendable, ChatAppProtoco
               port: UInt16) {
         
         let cleanText = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        let cleanHost = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        let cleanHost = host.trimmingCharacters(in: .whitespacesAndNewlines)
         
         guard !cleanText.isEmpty else {
             status("Enter a message")
@@ -119,10 +108,7 @@ final class ChatViewModel: ObservableObject, @unchecked Sendable, ChatAppProtoco
                                       port: destinationPort,
                                       using: .udp)
         queue.async { [weak self] in
-            guard let self else {
-                return
-            }
-            
+            guard let self else { return }
             let identifier = ObjectIdentifier(connection)
             self.outgoingConnection[identifier] = connection
             
@@ -213,12 +199,12 @@ final class ChatViewModel: ObservableObject, @unchecked Sendable, ChatAppProtoco
         }
         
         connection.start(queue: queue)
+        receiveNextMessage(on: connection)
         
     }
     
     private func receiveNextMessage(on connection: NWConnection) {
-        connection.receiveMessage { [weak self, weak connection] data,
-            _, _, error in
+        connection.receiveMessage { [weak self, weak connection] data, _, _, error in
             guard let self, let connection else { return }
             
             if let data, !data.isEmpty {
@@ -248,7 +234,7 @@ final class ChatViewModel: ObservableObject, @unchecked Sendable, ChatAppProtoco
                                   messageDirectoin: .received)
             
             DispatchQueue.main.async { [weak self] in
-                self?.message.append(message)
+                self?.messages.append(message)
             }
             return
         }
@@ -261,7 +247,7 @@ final class ChatViewModel: ObservableObject, @unchecked Sendable, ChatAppProtoco
                                   messageDirectoin: .received)
             
             DispatchQueue.main.async { [weak self] in
-                self?.message.append(message)
+                self?.messages.append(message)
             }
         } else {
             status("Received an unsupported UDP Payload")
@@ -276,7 +262,7 @@ final class ChatViewModel: ObservableObject, @unchecked Sendable, ChatAppProtoco
                               messageDirectoin: .sent)
         
         DispatchQueue.main.async { [weak self] in
-            self?.message.append(message)
+            self?.messages.append(message)
         }
     }
     
@@ -288,4 +274,14 @@ final class ChatViewModel: ObservableObject, @unchecked Sendable, ChatAppProtoco
         outgoingConnection.removeValue(forKey: ObjectIdentifier(connection))
         connection.cancel()
     }
-} 
+    
+    private func status(_ status: String,
+                        isListening listeningValue: Bool? = nil) {
+        DispatchQueue.main.async { [weak self] in
+            self?.status = status
+            if let listeningValue {
+                self?.isListening = listeningValue
+            }
+        }
+    }
+}
