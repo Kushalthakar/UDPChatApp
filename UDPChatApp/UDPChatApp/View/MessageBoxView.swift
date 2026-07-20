@@ -8,6 +8,8 @@
 import SwiftUI
 
 struct MessageBoxView: View {
+    @State private var msgInfo = false
+    
     let message: Message
     
     private var isSent: Bool {
@@ -21,15 +23,19 @@ struct MessageBoxView: View {
             }
             
             VStack(alignment: isSent ? .trailing : .leading, spacing: 4) {
-                Text(message.sender)
-                    .font(.caption)
-                    .fontWeight(.semibold)
-                
                 Text(message.text)
-                
-                Text(message.sentAt, style: .time)
-                    .font(.caption2)
-                    .opacity(0.7)
+                    .onLongPressGesture(minimumDuration: 2) {
+                        msgInfo = true
+                    }
+                    .alert("Message Information", isPresented: $msgInfo) {
+                        Button("Ok", role: .cancel) {}
+                        
+                    } message: {
+                        let messageSentAt = message.sentAt.formatted(.dateTime)
+                        Text("Send by: \(message.sender), Sent At: \(messageSentAt)")
+                            .font(.caption)
+                            .fontWeight(.semibold)
+                    }
             }
             .padding(12)
             .foregroundStyle(isSent ? Color.white : Color.primary)
@@ -45,8 +51,8 @@ struct MessageBoxView: View {
 
 #Preview {
     MessageBoxView(message: Message(id: UUID(),
-                                       sender: "",
-                                       text: "",
+                                       sender: "Kushal",
+                                       text: "Hi",
                                        sentAt: Date(),
                                        messageDirectoin: .sent))
 }

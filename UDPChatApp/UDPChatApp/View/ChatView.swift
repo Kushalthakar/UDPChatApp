@@ -19,14 +19,12 @@ struct ChatView: View {
     
     var body: some View {
         NavigationStack {
-            VStack(spacing: 12) {
+            VStack(spacing: 7) {
                 connection
-                status
                 message
                 messageInput
             }
             .padding()
-            .navigationTitle("Chat")
             .onDisappear() {
                 chatViewModel.stop()
             }
@@ -34,63 +32,61 @@ struct ChatView: View {
     }
     
     private var connection: some View {
-        GroupBox("Settings") {
-            VStack(spacing: 10) {
-                TextField("Your Name", text: $displayName)
-                    .textFieldStyle(.roundedBorder)
+        VStack(spacing: 7) {
+            Text("Configure")
+                .font(.title2)
+                .multilineTextAlignment(.leading)
+                .frame(maxWidth: .infinity, alignment: .leading)
                 
-                HStack {
-                    TextField("Local port", text: $localPort)
-                        .keyboardType(.numberPad)
-                        .textFieldStyle(.roundedBorder)
-                    
-                    TextField("Peer IP Address", text: $peerIPAddress)
-                        .keyboardType(.numbersAndPunctuation)
-                        .textInputAutocapitalization(.never)
-                        .autocorrectionDisabled()
-                        .textFieldStyle(.roundedBorder)
-                    
-                    TextField("Peer port", text: $peerPort)
-                        .keyboardType(.numberPad)
-                        .textFieldStyle(.roundedBorder)
+            
+            TextField("Your Name", text: $displayName)
+            
+            TextField("Local Port", text: $localPort)
+                .keyboardType(.numberPad)
+            
+            TextField("Peer Port", text: $peerPort)
+                .keyboardType(.numberPad)
+            
+            TextField("Peer IP Address", text: $peerIPAddress)
+                .keyboardType(.numbersAndPunctuation)
+                .textInputAutocapitalization(.never)
+                .autocorrectionDisabled()
+            
+            HStack {
+                Button("Start") {
+                    startListener()
                 }
+                .buttonStyle(.borderedProminent)
+                .disabled(chatViewModel.isListening)
                 
-                HStack {
-                    Button("Start the Listener") {
-                        startListener()
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .disabled(chatViewModel.isListening)
-                    
-                    Button("Stop", role: .destructive) {
-                        chatViewModel.stop()
-                    }
-                    .buttonStyle(.bordered)
-                    .disabled(!chatViewModel.isListening)
-                    
-                    if !validationMessage.isEmpty {
-                        Text(validationMessage)
-                            .font(.caption)
-                            .foregroundStyle(.red)
-                    }
+                Button("Stop", role: .destructive) {
+                    chatViewModel.stop()
                 }
-                .padding(.top, 4)
+                .buttonStyle(.bordered)
+                .disabled(!chatViewModel.isListening)
+                
+                if !validationMessage.isEmpty {
+                    Text(validationMessage)
+                        .font(.caption)
+                        .foregroundStyle(.red)
+                }
+            }
+            .padding(.vertical, 7)
+            
+            HStack {
+                Circle()
+                    .fill(chatViewModel.isListening ? Color.green : Color.gray)
+                    .frame(width: 10, height: 10)
+                
+                Text(chatViewModel.status)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                
+                Spacer()
             }
         }
-    }
-    
-    private var status: some View {
-        HStack {
-            Circle()
-                .fill(chatViewModel.isListening ? Color.green : Color.gray)
-                .frame(width: 10, height: 10)
-            
-            Text(chatViewModel.status)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-            
-            Spacer()
-        }
+        .shadow(radius: 1)
+        .frame(maxWidth: .infinity)
     }
     
     private var message: some View {
@@ -99,9 +95,9 @@ struct ChatView: View {
                 LazyVStack(spacing: 10) {
                     if chatViewModel.messages.isEmpty {
                         ContentUnavailableView(
-                            "no message",
+                            "No Message",
                             systemImage: "bubble.left.and.bubble.right",
-                            description: Text("Start the message and send a UDP message")
+                            description: Text("Send the Message")
                         )
                     }
                     
@@ -115,7 +111,6 @@ struct ChatView: View {
                 guard let lastMessage = chatViewModel.messages.last else {
                     return
                 }
-                
                 withAnimation {
                     proxy.scrollTo( lastMessage.id,
                                     anchor: .bottom)
@@ -146,11 +141,12 @@ struct ChatView: View {
                 .isEmpty
             )
         }
+        .shadow(radius: 2)
     }
     
     private func startListener() {
         guard let port = UInt16(localPort) else {
-            validationMessage = "The local port must be between 1 and 65535"
+            validationMessage = "Enter the local port number"
             return
         }
         
@@ -160,7 +156,7 @@ struct ChatView: View {
     
     private func sendMessage() {
         guard let port = UInt16(peerPort) else {
-            validationMessage = "The peer port must be between 1 and 65535"
+            validationMessage = "Enter peer port number"
             return
         }
         
@@ -177,9 +173,9 @@ struct ChatView: View {
                            sender: displayName,
                            host: peerIPAddress,
                            port: port)
+        
         messageText = ""
     }
-    
 }
 
 #Preview {

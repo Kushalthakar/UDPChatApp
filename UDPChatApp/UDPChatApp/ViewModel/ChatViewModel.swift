@@ -11,7 +11,7 @@ import Combine
 
 final class ChatViewModel: ObservableObject, @unchecked Sendable {
     @Published private(set) var messages: [Message] = []
-    @Published private(set) var status: String = "Listener Stopped"
+    @Published private(set) var status: String = "Not Listening"
     @Published private(set) var isListening: Bool = false
     
     private(set) var listener: NWListener?
