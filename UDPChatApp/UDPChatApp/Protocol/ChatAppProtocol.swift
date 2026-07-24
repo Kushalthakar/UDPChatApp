@@ -8,10 +8,9 @@
 import Foundation
 
 protocol ChatAppProtocol {
-    func startListening(port: UInt16)
+    func start()
+    func startListening() throws
     func send(text: String,
-              sender: String,
-              host: String,
-              port: UInt16)
+              to peer: DiscoveredPeer)
     func stop()
 }

@@ -10,83 +10,114 @@ import SwiftUI
 struct ChatView: View {
     @StateObject private var chatViewModel: ChatViewModel = ChatViewModel()
     
-    @State private var displayName: String = ""
-    @State private var localPort: String = ""
-    @State private var peerIPAddress: String = ""
-    @State private var peerPort: String = ""
+    @State private var selectedPeerID: String?
     @State private var messageText: String = ""
-    @State private var validationMessage: String = ""
+    
+    private var selectedPeer: DiscoveredPeer? {
+        chatViewModel.peers.first {
+            $0.id == selectedPeerID
+        }
+    }
     
     var body: some View {
         NavigationStack {
             VStack(spacing: 7) {
-                connection
+                status
+                peer
                 message
                 messageInput
             }
             .padding()
+            .onAppear{
+                chatViewModel.start()
+            }
+            .onChange(of: chatViewModel.peers.map(\.id)) {
+                peerIDs in updateSelectedPeer(availablePeerIDs: peerIDs)
+            }
             .onDisappear() {
                 chatViewModel.stop()
             }
         }
     }
     
-    private var connection: some View {
-        VStack(spacing: 7) {
-            Text("Configure")
-                .font(.title2)
-                .multilineTextAlignment(.leading)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                
-            
-            TextField("Your Name", text: $displayName)
-            
-            TextField("Local Port", text: $localPort)
-                .keyboardType(.numberPad)
-            
-            TextField("Peer Port", text: $peerPort)
-                .keyboardType(.numberPad)
-            
-            TextField("Peer IP Address", text: $peerIPAddress)
-                .keyboardType(.numbersAndPunctuation)
-                .textInputAutocapitalization(.never)
-                .autocorrectionDisabled()
-            
-            HStack {
-                Button("Start") {
-                    startListener()
-                }
-                .buttonStyle(.borderedProminent)
-                .disabled(chatViewModel.isListening)
-                
-                Button("Stop", role: .destructive) {
-                    chatViewModel.stop()
-                }
-                .buttonStyle(.bordered)
-                .disabled(!chatViewModel.isListening)
-                
-                if !validationMessage.isEmpty {
-                    Text(validationMessage)
-                        .font(.caption)
-                        .foregroundStyle(.red)
-                }
-            }
-            .padding(.vertical, 7)
-            
+    private var status: some View {
+        VStack(alignment: .leading, spacing: 8) {
             HStack {
                 Circle()
-                    .fill(chatViewModel.isListening ? Color.green : Color.gray)
+                    .fill( chatViewModel.isListening ? Color.green : Color.orange)
                     .frame(width: 10, height: 10)
-                
                 Text(chatViewModel.status)
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                
+                    .lineLimit(2)
                 Spacer()
             }
+            
+            HStack {
+                Image(systemName: "iphone")
+                
+                Text("You: \(chatViewModel.localDisplayName)")
+                    .font(.subheadline)
+                    .fontWeight(.medium)
+                
+                Spacer()
+                
+                Button {
+                    chatViewModel.stop()
+                    chatViewModel.start()
+                } label: {
+                    Image ( systemName: "arrow.clockwise" )
+                }
+                .accessibilityLabel("Restart discovery")
+            }
         }
-        .shadow(radius: 1)
-        .frame(maxWidth: .infinity)
+    }
+    
+    private var peer: some View {
+        GroupBox("NearBy Peer") {
+            if chatViewModel.peers.isEmpty {
+                VStack(spacing: 8) {
+                    ProgressView()
+                    
+                    Text("Open UDP Chat on another simulator " + " or device.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
+                }
+                .frame(maxWidth: .infinity, minHeight: 70)
+            } else {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 10) {
+                        ForEach(chatViewModel.peers) {
+                            peer in peerButton(peer)
+                        }
+                    }
+                }
+            }
+        }
+    }
+    
+    private func peerButton(_ peer: DiscoveredPeer) -> some View {
+        let isSelected = selectedPeerID == peer.id
+        return Button {
+            selectedPeerID = peer.id
+        } label: {
+            HStack(spacing: 8) {
+                Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
+                Text(peer.name)
+                    .lineLimit(1)
+            }
+            .font(.subheadline)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 10)
+            .background(isSelected ? Color.accentColor.opacity(0.18) : Color.secondary.opacity(0.10))
+            .clipShape(RoundedRectangle(cornerRadius: 12))
+            .overlay {
+                RoundedRectangle(cornerRadius: 12)
+                    .stroke(isSelected ? Color.accentColor : Color.clear, lineWidth: 1)
+            }
+        }
+        .buttonStyle(.plain)
     }
     
     private var message: some View {
@@ -94,16 +125,14 @@ struct ChatView: View {
             ScrollView {
                 LazyVStack(spacing: 10) {
                     if chatViewModel.messages.isEmpty {
-                        ContentUnavailableView(
-                            "No Message",
-                            systemImage: "bubble.left.and.bubble.right",
-                            description: Text("Send the Message")
-                        )
-                    }
-                    
-                    ForEach(chatViewModel.messages) { message in
-                        MessageBoxView(message: message)
+                        emptyMessageView
+                    } else {
+                        ForEach(chatViewModel.messages) {
+                            message in MessageBoxView(
+                                message: message
+                            )
                             .id(message.id)
+                        }
                     }
                 }
             }
@@ -111,21 +140,36 @@ struct ChatView: View {
                 guard let lastMessage = chatViewModel.messages.last else {
                     return
                 }
+                
                 withAnimation {
-                    proxy.scrollTo( lastMessage.id,
-                                    anchor: .bottom)
+                    proxy.scrollTo(lastMessage.id, anchor: .bottom)
                 }
             }
         }
     }
     
+    private var emptyMessageView: some View {
+        VStack(spacing: 12) {
+            Image(systemName: "bubble.left.and.bubble.right")
+                .font(.system(size: 42))
+                .foregroundStyle(.secondary)
+            
+            Text(selectedPeer == nil ? "Waiting for another UDP Chat peer." : "Send a message to \(selectedPeer?.name ?? "the peer")")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+        }
+        .frame(maxWidth: .infinity, minHeight: 230)
+    }
+    
     private var messageInput: some View {
-        HStack {
-            TextField("Enter message",
+        HStack(alignment: .bottom) {
+            TextField(selectedPeer == nil ? "Waiting for peer..." : "Message \(selectedPeer?.name ?? "")",
                       text: $messageText,
                       axis: .vertical)
             .textFieldStyle(.roundedBorder)
             .lineLimit(1...4)
+            .disabled(selectedPeer == nil)
             .onSubmit {
                 sendMessage()
             }
@@ -137,44 +181,29 @@ struct ChatView: View {
                     .font(.title3)
             }
             .buttonStyle(.borderedProminent)
-            .disabled(messageText.trimmingCharacters(in: .whitespacesAndNewlines)
-                .isEmpty
-            )
+            .disabled(selectedPeer == nil || messageText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
         }
-        .shadow(radius: 2)
-    }
-    
-    private func startListener() {
-        guard let port = UInt16(localPort) else {
-            validationMessage = "Enter the local port number"
-            return
-        }
-        
-        validationMessage = ""
-        chatViewModel.startListening(port: port)
     }
     
     private func sendMessage() {
-        guard let port = UInt16(peerPort) else {
-            validationMessage = "Enter peer port number"
-            return
-        }
+        guard let selectedPeer else { return }
         
-        guard !peerIPAddress
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-            .isEmpty else {
-            validationMessage = "Enter the other device's IP address"
-            return
-        }
+        let text = messageText.trimmingCharacters(in: .whitespacesAndNewlines)
         
-        validationMessage = ""
+        guard !text.isEmpty else { return }
         
-        chatViewModel.send(text: messageText,
-                           sender: displayName,
-                           host: peerIPAddress,
-                           port: port)
+        chatViewModel.send(text: text,
+                           to: selectedPeer)
         
         messageText = ""
+    }
+    
+    private func updateSelectedPeer(availablePeerIDs: [String]) {
+        if let selectedPeerID, availablePeerIDs.contains(selectedPeerID) {
+            return
+        }
+        
+        selectedPeerID = availablePeerIDs.first
     }
 }
 

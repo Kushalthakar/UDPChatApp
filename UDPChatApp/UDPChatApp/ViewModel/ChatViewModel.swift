@@ -7,112 +7,172 @@
 
 import Foundation
 import Combine
+import UIKit
 @preconcurrency import Network
 
-final class ChatViewModel: ObservableObject, @unchecked Sendable {
+final class ChatViewModel: ObservableObject, @unchecked Sendable, ChatAppProtocol {
+    @Published private(set) var peers: [DiscoveredPeer] = []
     @Published private(set) var messages: [Message] = []
     @Published private(set) var status: String = "Not Listening"
     @Published private(set) var isListening: Bool = false
     
-    private(set) var listener: NWListener?
-    private(set) var incomingConnection: [ObjectIdentifier: NWConnection] = [:]
-    private(set) var outgoingConnection: [ObjectIdentifier: NWConnection] = [:]
-    private(set) var queue = DispatchQueue ( label: "com.example.UDPChatApp.network" )
+    private static let serviceType = "_udpchat._udp"
+    private let serviceName: String
+    private var browser: NWBrowser?
+    private var listener: NWListener?
+    private var incomingConnection: [ObjectIdentifier: NWConnection] = [:]
+    private var outgoingConnection: [ObjectIdentifier: NWConnection] = [:]
+    private var receivedMessageIDs: Set<UUID> = []
+    private var queue = DispatchQueue ( label: "com.example.UDPChatApp.network" )
     
-    init() {}
+    let localDisplayName: String
     
-    deinit { listener?.cancel() }
+    init() {
+        let rawDeviceName: String
+        
+        #if targetEnvironment(simulator)
+        rawDeviceName = ProcessInfo.processInfo.environment["SIMULATOR_DEVICE_NAME"] ?? "iOS Simulator"
+        #else
+        rawDeviceName = UIDevice.current.name
+        #endif
+        
+        let trimmedName = rawDeviceName.trimmingCharacters(in: .whitespacesAndNewlines)
+        
+        let safeName = trimmedName.isEmpty ? "iOS Device" : trimmedName
+        
+        localDisplayName = safeName
+        
+        let suffix = UUID()
+            .uuidString
+            .prefix(4)
+            .uppercased()
+        
+        serviceName = "\(String(safeName.prefix(35)))-\(suffix)"
+     }
     
-    func startListening(port: UInt16) {
-        guard listener == nil else {
-            status("Listener is already running")
-            return
+    deinit {
+        listener?.cancel()
+        browser?.cancel()
+        
+        incomingConnection.values.forEach {
+            $0.cancel()
         }
-        guard let networkPort = NWEndpoint.Port(rawValue: port) else {
-            status("Invalid listening port")
-            return
-        }
-        do {
-            let newListener = try NWListener(using: .udp,
-                                             on: networkPort)
-            
-            newListener.stateUpdateHandler = { [weak self] state in
-                switch state {
-                case .ready:
-                    self?.status("Listening on UDP port \(port)",
-                                 isListening: true)
-                case .waiting(let error):
-                    self?.status("Listener waiting: \(error.localizedDescription)")
-                case .failed(let error):
-                    self?.status("Listener failed: \(error.localizedDescription)",
-                                 isListening: false)
-                case .cancelled:
-                    self?.status("Listener stopped",
-                                 isListening: false)
-                default:
-                    break
-                }
-            }
-            newListener.newConnectionHandler = { [weak self] connection in
-                self?.acceptIncomingConnection(connection)
-            }
-            listener = newListener
-            newListener.start(queue: queue)
-        } catch {
-            status("Could not start listener: \(error.localizedDescription)",
-                   isListening: false)
+        outgoingConnection.values.forEach {
+            $0.cancel()
         }
     }
     
+    func start() {
+        status("Starting UDP listener")
+        
+        queue.async { [weak self] in
+            guard let self else {
+                return
+            }
+            
+            guard self.listener == nil,
+                  self.browser == nil else {
+                return
+            }
+            
+            do {
+                try self.startListening()
+                self.startBrowser()
+            } catch {
+                self.status("Could not start UDP Chat App: " + error.localizedDescription, isListening: false)
+            }
+        }
+    }
+    
+    func startListening() throws {
+        let parameters = Self.makeUDPParemeter()
+        
+        let newListener = try NWListener(using: parameters)
+        
+        newListener.service = NWListener.Service(name: serviceName,
+                                                 type: Self.serviceType)
+        
+        newListener.stateUpdateHandler = { [weak self] state in
+            guard let self else {
+                return
+            }
+            
+            switch state {
+            case .ready:
+                let portDestination = newListener.port.map{String($0.rawValue)} ?? "automatic"
+                status("Listening on automatic UDP port " + portDestination, isListening: true)
+                
+            case .waiting(let error):
+                status("UDP listener waiting: " + error.localizedDescription, isListening: false)
+                
+            case .failed(let error):
+                status("UDP listener failed: " + error.localizedDescription, isListening: false)
+                self.stopNetworkObjects()
+                
+            case .cancelled:
+                status("UDP listener stopped", isListening: false)
+                
+            default: break
+            }
+        }
+        
+        newListener.serviceRegistrationUpdateHandler = {
+            [weak self] change in
+            guard let self else {
+                return
+            }
+            switch change {
+            case .add:
+                status("Ready as \(self.localDisplayName)", isListening: true)
+                
+            case .remove:
+                status("Bonjour service was removed", isListening: false)
+                
+            @unknown default:
+                break
+            }
+        }
+        
+        newListener.newConnectionHandler = {[weak self] connection in
+            self?.acceptIncomingConnection(connection)
+        }
+        
+        listener = newListener
+        newListener.start(queue: queue)
+    }
+    
     func send(text: String,
-              sender: String,
-              host: String,
-              port: UInt16) {
+              to peer: DiscoveredPeer) {
         
         let cleanText = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        let cleanHost = host.trimmingCharacters(in: .whitespacesAndNewlines)
         
         guard !cleanText.isEmpty else {
-            status("Enter a message")
             return
         }
         
-        guard !cleanHost.isEmpty else {
-            status("Enter the Peer IP address")
-            return
-        }
+        let packet = Packet(sender: localDisplayName,
+                            text: cleanText)
         
-        guard let destinationPort = NWEndpoint.Port(rawValue: port) else {
-            status("Invalid destination port")
-            return
-        }
-        
-        let packet = Packet(id: UUID(),
-                            sender: sender.isEmpty ? "unknown" : sender,
-                            text: cleanText,
-                            sentAt: Date())
-        
-        let encoder = JSONEncoder()
-        encoder.dateEncodingStrategy = .iso8601
+        let encoded = JSONEncoder()
+        encoded.dateEncodingStrategy = .iso8601
         
         let data: Data
         
         do {
-            data = try encoder.encode(packet)
+            data = try encoded.encode(packet)
         } catch {
-            status("Encoding failed: \(error.localizedDescription)")
+            status("Could not encode message: " + error.localizedDescription)
             return
         }
         
-        let connection = NWConnection(host: NWEndpoint.Host(cleanHost),
-                                      port: destinationPort,
-                                      using: .udp)
         queue.async { [weak self] in
             guard let self else { return }
+            
+            let connection = NWConnection(to: peer.endpoint,
+                                          using: Self.makeUDPParemeter())
+            
             let identifier = ObjectIdentifier(connection)
             self.outgoingConnection[identifier] = connection
-            
-            var messageWasSent = false
             
             connection.stateUpdateHandler = {
                 [weak self, weak connection] state in
@@ -123,60 +183,158 @@ final class ChatViewModel: ObservableObject, @unchecked Sendable {
                 
                 switch state {
                 case .ready:
-                    guard !messageWasSent else {
-                        return
-                    }
-                    messageWasSent = true
+                    status("Sending to \(peer.name)")
                     
-                    connection.send(content: data,
-                                    contentContext: .defaultMessage,
-                                    isComplete: true,
-                                    completion: .contentProcessed { error in
-                        if let error {
-                            self.status("Send failed: \(error.localizedDescription)")
-                        } else {
-                            self.appendSentMessage(packet)
-                            
-                            self.status("Message sent to \(cleanHost): \(port)")
-                        }
-                        self.finishOutgoingConnection(connection)
-                    })
                 case .waiting(let error):
-                    self.status("Connection waiting: \(error.localizedDescription)")
+                    status("Waiting for \(peer.name): " + error.localizedDescription)
+                    
                 case .failed(let error):
-                    self.status("Connection failed: \(error.localizedDescription)")
+                    status("Send connection failed: " + error.localizedDescription)
                     self.finishOutgoingConnection(connection)
+                    
                 case .cancelled:
                     self.outgoingConnection.removeValue(forKey: ObjectIdentifier(connection))
+                    
                 default:
                     break
                 }
-                
             }
-            connection.start(queue: self.queue)
+            
+            connection.start(queue: queue)
+            
+            connection.send(content: data,
+                            contentContext: .defaultMessage,
+                            isComplete: true,
+                            completion: .contentProcessed {
+                [weak self, weak connection] error in
+                guard let self, let connection else {
+                    return
+                }
+                
+                if let error {
+                    status("Send failed: " + error.localizedDescription)
+                } else {
+                    self.appendSentMessage(packet)
+                    status("Message sent to: \(peer.name)")
+                }
+                self.finishOutgoingConnection(connection)
+            })
         }
     }
     
     func stop() {
-        listener?.cancel()
-        listener = nil
-        
         queue.async { [weak self] in
             guard let self else { return }
-            self.incomingConnection.values.forEach {
-                $0.cancel()
+            self.stopNetworkObjects()
+            self.status("UDP Chat Stopped", isListening: false)
+            DispatchQueue.main.async {
+                self.peers = []
+            }
+        }
+    }
+    
+    private static func makeUDPParemeter() -> NWParameters {
+        let parameters = NWParameters.udp
+        parameters.includePeerToPeer = true
+        return parameters
+    }
+    
+    private func startBrowser() {
+        let parameters = Self.makeUDPParemeter()
+        
+        let descriptor = NWBrowser.Descriptor.bonjour(type: Self.serviceType,
+                                                      domain: nil)
+        let newBrowser = NWBrowser(for: descriptor, using: parameters)
+        
+        newBrowser.stateUpdateHandler = {
+            [weak self] state in
+            guard let self else {
+                return
             }
             
-            self.outgoingConnection.values.forEach {
-                $0.cancel()
+            switch state {
+            case .ready:
+                self.status("Seacrching for nearby UDP peer..", isListening: true)
+                
+            case .waiting(let error):
+                self.status("Peer discovery waiting: " + error.localizedDescription)
+                
+            case .failed(let error):
+                self.status("Peer discovery failed: " + error.localizedDescription)
+                
+            case .cancelled:
+                break
+                
+            default:
+                break
             }
-            
-            self.incomingConnection.removeAll()
-            self.outgoingConnection.removeAll()
         }
         
-        status("Listener stopped",
-               isListening: false)
+        newBrowser.browseResultsChangedHandler = {
+            [weak self] results, _ in
+            self?.updateDiscoveredPeers(results)
+        }
+        
+        browser = newBrowser
+        newBrowser.start(queue: queue)
+        
+    }
+    
+    private func updateDiscoveredPeers(_ results: Set<NWBrowser.Result>) {
+        let discoveredPeers = results.compactMap {
+            result -> DiscoveredPeer? in
+            guard case let .service(
+                name,
+                _,
+                _,
+                _
+            ) = result.endpoint else {
+                return nil
+            }
+            
+            guard name != serviceName else {
+                return nil
+            }
+            
+            return DiscoveredPeer(
+                endpoint: result.endpoint,
+                name: friendlyName(from: name)
+            )
+        }
+            .sorted {
+                $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
+            }
+        
+        DispatchQueue.main.async { [weak self] in
+            guard let self else {
+                return
+            }
+            
+            self.peers = discoveredPeers
+            
+            if discoveredPeers.isEmpty {
+                self.status = "No nearby UDP peers found"
+            } else {
+                self.status = "\(discoveredPeers.count) peer" + (discoveredPeers.count == 1 ? "" : "s") + " found"
+            }
+            
+        }
+    }
+    
+    private func friendlyName(from bonjourName: String) -> String {
+        guard bonjourName.count > 5 else {
+            return bonjourName
+        }
+        
+        let suffixStart = bonjourName.index(bonjourName.endIndex,
+        offsetBy: -5)
+        let possibleSuffix = bonjourName[suffixStart...]
+        
+        guard possibleSuffix.first == "_" else {
+            return bonjourName
+        }
+        
+        return String(bonjourName[..<suffixStart])
     }
     
     private func acceptIncomingConnection(_ connection: NWConnection) {
@@ -191,8 +349,10 @@ final class ChatViewModel: ObservableObject, @unchecked Sendable {
             case .failed(let error):
                 self.status("Received connection failed: \(error.localizedDescription)")
                 self.removeIncomingConnection(connection)
+                
             case .cancelled:
                 self.removeIncomingConnection(connection)
+                
             default:
                 break
             }
@@ -225,8 +385,22 @@ final class ChatViewModel: ObservableObject, @unchecked Sendable {
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
         
-        if let packet = try? decoder.decode(Packet.self,
-                                            from: data) {
+        do {
+            let packet = try decoder.decode(Packet.self,
+                                            from: data)
+            
+            guard packet.application == "UDPChatApp",
+                  packet.version == 1 else {
+                status("Received an unsupported packet")
+                return
+            }
+            
+            guard !receivedMessageIDs.contains(packet.id) else {
+                return
+            }
+            
+            receivedMessageIDs.insert(packet.id)
+            
             let message = Message(id: packet.id,
                                   sender: packet.sender,
                                   text: packet.text,
@@ -235,22 +409,24 @@ final class ChatViewModel: ObservableObject, @unchecked Sendable {
             
             DispatchQueue.main.async { [weak self] in
                 self?.messages.append(message)
+                self?.status = "Message received from \(packet.sender)"
             }
-            return
-        }
-        
-        if let text = String(data: data, encoding: .utf8) {
+        } catch {
+            guard let text = String(data: data, encoding: .utf8) else {
+                status("Received an unreadable UDP data")
+                return
+            }
+            
             let message = Message(id: UUID(),
-                                  sender: "Peer",
+                                  sender: "UDP Peer",
                                   text: text,
                                   sentAt: Date(),
                                   messageDirectoin: .received)
             
-            DispatchQueue.main.async { [weak self] in
+            DispatchQueue.main.async {[weak self] in
                 self?.messages.append(message)
+                
             }
-        } else {
-            status("Received an unsupported UDP Payload")
         }
     }
     
@@ -283,5 +459,21 @@ final class ChatViewModel: ObservableObject, @unchecked Sendable {
                 self?.isListening = listeningValue
             }
         }
+    }
+    
+    private func stopNetworkObjects() {
+        listener?.cancel()
+        listener = nil
+        browser?.cancel()
+        browser = nil
+        incomingConnection.values.forEach {
+            $0.cancel()
+        }
+        outgoingConnection.values.forEach {
+            $0.cancel()
+        }
+        
+        incomingConnection.removeAll()
+        outgoingConnection.removeAll()
     }
 }
