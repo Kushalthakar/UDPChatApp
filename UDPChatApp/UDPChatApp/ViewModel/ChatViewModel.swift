@@ -246,11 +246,8 @@ final class ChatViewModel: ObservableObject, @unchecked Sendable, ChatAppProtoco
                                                       domain: nil)
         let newBrowser = NWBrowser(for: descriptor, using: parameters)
         
-        newBrowser.stateUpdateHandler = {
-            [weak self] state in
-            guard let self else {
-                return
-            }
+        newBrowser.stateUpdateHandler = {[weak self] state in
+            guard let self else { return }
             
             switch state {
             case .ready:
